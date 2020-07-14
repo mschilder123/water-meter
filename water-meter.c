@@ -7,9 +7,7 @@
 #include <unistd.h>
 #include <wiringPi.h>
 
-// Using GPIO Pin 23, which is Pin 4 for wiringPi library
-
-#define PULSE_PIN 4
+#define PULSE_PIN 4 // Using GPIO Pin 23, which is Pin 4 for wiringPi library
 #define DEBOUNCE_MILLIS 1000 // 50 G/M max pulse rate
 
 #define WWW_FILE "/var/www/html/well.json"
@@ -17,24 +15,20 @@
 volatile int totalGallons = 0;
 volatile unsigned int lastUpdateMillis = 0;
 volatile unsigned int lastBounceMillis = 0;
+volatile int lastLevel = 1;
 volatile float gallonsPerMinute = 0;
 
-void FallingEdgeInterrupt(void) {
+void EdgeInterrupt(void) {
   unsigned int now = millis();
   unsigned int delta_t = now - lastBounceMillis;
-  if (delta_t > DEBOUNCE_MILLIS) {
+  int level = digitalRead(PULSE_PIN);
+  if (delta_t > DEBOUNCE_MILLIS && level == 0 && lastLevel == 1) {
     gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
-    lastUpdateMillis = lastBounceMillis = now;
+    lastUpdateMillis = now;
     totalGallons++;
   }
-}
-
-void RisingEdgeInterrupt(void) {
-  unsigned int now = millis();
-  unsigned int delta_t = now - lastBounceMillis;
-  if (delta_t > DEBOUNCE_MILLIS) {
-    lastBounceMillis = now;
-  }
+  lastBounceMillis = now;
+  lastLevel = level;
 }
 
 void printState(void) {
@@ -79,11 +73,7 @@ int main(int argc, char *argv[]) {
   pullUpDnControl(PULSE_PIN, PUD_UP);
 
   // setup notification
-  if (wiringPiISR(PULSE_PIN, INT_EDGE_FALLING, &FallingEdgeInterrupt) < 0) {
-    fprintf(stderr, "Unable to setup ISR: %s\n", strerror(errno));
-    return 1;
-  }
-  if (wiringPiISR(PULSE_PIN, INT_EDGE_RISING, &RisingEdgeInterrupt) < 0) {
+  if (wiringPiISR(PULSE_PIN, INT_EDGE_BOTH, &EdgeInterrupt) < 0) {
     fprintf(stderr, "Unable to setup ISR: %s\n", strerror(errno));
     return 1;
   }
