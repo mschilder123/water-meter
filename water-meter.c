@@ -21,14 +21,16 @@ volatile float gallonsPerMinute = 0;
 void EdgeInterrupt(void) {
   unsigned int now = millis();
   unsigned int delta_t = now - lastBounceMillis;
-  int level = digitalRead(PULSE_PIN);
-  if (delta_t > DEBOUNCE_MILLIS && level == 0 && lastLevel == 1) {
-    gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
-    lastUpdateMillis = now;
-    totalGallons++;
+  if (delta_t > DEBOUNCE_MILLIS) {
+    // this is first bounce in a while, thus lastLevel was accurately read
+    if (lastLevel == 1) {
+      gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
+      lastUpdateMillis = now;
+      totalGallons++;
+    }
+    lastBounceMillis = now;
   }
-  lastBounceMillis = now;
-  lastLevel = level;
+  lastLevel = digitalRead(PULSE_PIN);
 }
 
 void printState(void) {
