@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,33 +9,80 @@
 #include <wiringPi.h>
 
 #define PULSE_PIN 4 // Using GPIO Pin 23, which is Pin 4 for wiringPi library
-#define DEBOUNCE_MILLIS 1000 // 50 G/M max pulse rate
+#define DEBOUNCE_MILLIS 50
 
 #define WWW_FILE "/var/www/html/well.json"
 
 volatile int totalGallons = 0;
 volatile unsigned int lastUpdateMillis = 0;
 volatile unsigned int lastBounceMillis = 0;
-volatile int lastLevel = 1;
 volatile float gallonsPerMinute = 0;
+volatile int state = 1;
+
+struct event_t {
+  int millis;
+  int level;
+};
+
+#define NUM_EVENTS 128
+struct event_t events[NUM_EVENTS];
+volatile int event_wp, event_rp;
+
+void push_event(int millis, int level) {
+  if ((event_wp + 1) % NUM_EVENTS != event_rp) {
+    struct event_t *e = &events[event_wp];
+    e->millis = millis;
+    e->level = level;
+    event_wp = (event_wp + 1) % NUM_EVENTS;
+  }
+}
+
+bool pop_event(struct event_t *d) {
+  if (event_rp == event_wp)
+    return false;
+  *d = events[event_rp];
+  event_rp = (event_rp + 1) % NUM_EVENTS;
+  return true;
+}
 
 void EdgeInterrupt(void) {
   unsigned int now = millis();
   unsigned int delta_t = now - lastBounceMillis;
+  int currentLevel = digitalRead(PULSE_PIN);
+
+  push_event(now, currentLevel);
+
   if (delta_t > DEBOUNCE_MILLIS) {
-    // this is first bounce in a while, thus lastLevel was accurately read
-    if (lastLevel == 1) {
-      gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
-      lastUpdateMillis = now;
-      totalGallons++;
+    if (currentLevel == 0) {
+      if (state == 1) {
+        gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
+        lastUpdateMillis = now;
+        totalGallons++;
+        state = 0;
+        lastBounceMillis = now;
+      }
+    } else if (state == 0) {
+      state = 1;
+      lastBounceMillis = now;
     }
-    lastBounceMillis = now;
   }
-  lastLevel = digitalRead(PULSE_PIN);
+}
+
+bool printEvents(void) {
+  struct event_t e;
+  bool had_output = false;
+  while (pop_event(&e)) {
+    printf("[%u,%d]", e.millis, e.level);
+    had_output = true;
+  }
+  return had_output;
 }
 
 void printState(void) {
   static int last_count = -1;
+  bool add_eoln = false;
+
+  add_eoln = printEvents();
 
   if (last_count != totalGallons) {
     last_count = totalGallons;
@@ -44,19 +92,23 @@ void printState(void) {
     *strchr(t, '\n') = 0;
 
     char buf[1024];
-    snprintf(
-        buf, sizeof(buf),
-        "{\"time\": %lu, \"ctime\": \"%s\", \"total\": %u, \"gpm\": %.1f}\n",
-        now, t, last_count, gallonsPerMinute);
+    snprintf(buf, sizeof(buf),
+             "{\"time\": %lu, \"ctime\": \"%s\", \"millis\": %u, \"total\": "
+             "%u, \"gpm\": %.1f}\n",
+             now, t, lastUpdateMillis, last_count, gallonsPerMinute);
     printf("%s", buf);
+    add_eoln = false;
 
     // update www file
-    int fd = open(WWW_FILE, O_WRONLY);
+    int fd = open(WWW_FILE, O_WRONLY | O_TRUNC);
     if (fd >= 0) {
       write(fd, buf, strlen(buf));
       close(fd);
     }
   }
+
+  if (add_eoln)
+    printf("\n");
 }
 
 int main(int argc, char *argv[]) {
