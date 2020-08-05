@@ -13,11 +13,13 @@
 
 #define WWW_FILE "/var/www/html/well.json"
 
+bool FLAG_debug; // --debug
+
 volatile int totalGallons = 0;
 volatile unsigned int lastUpdateMillis = 0;
 volatile unsigned int lastBounceMillis = 0;
 volatile float gallonsPerMinute = 0;
-volatile int state = 1;
+volatile int currentState = 1;
 
 struct event_t {
   int millis;
@@ -30,16 +32,19 @@ volatile int event_wp, event_rp;
 
 void push_event(int millis, int level) {
   if ((event_wp + 1) % NUM_EVENTS != event_rp) {
-    struct event_t *e = &events[event_wp];
-    e->millis = millis;
-    e->level = level;
+    struct event_t e = {.millis = millis, .level = level};
+    events[event_wp] = e;
     event_wp = (event_wp + 1) % NUM_EVENTS;
+  } else {
+    // event fifo full
   }
 }
 
 bool pop_event(struct event_t *d) {
-  if (event_rp == event_wp)
+  if (event_rp == event_wp) {
+    // event fifo empty
     return false;
+  }
   *d = events[event_rp];
   event_rp = (event_rp + 1) % NUM_EVENTS;
   return true;
@@ -50,31 +55,37 @@ void EdgeInterrupt(void) {
   unsigned int delta_t = now - lastBounceMillis;
   int currentLevel = digitalRead(PULSE_PIN);
 
-  push_event(now, currentLevel);
+  if (FLAG_debug) {
+    push_event(now, currentLevel);
+  }
 
   if (delta_t > DEBOUNCE_MILLIS) {
     if (currentLevel == 0) {
-      if (state == 1) {
+      if (currentState == 1) {
         gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
         lastUpdateMillis = now;
         totalGallons++;
-        state = 0;
+        currentState = 0;
         lastBounceMillis = now;
       }
-    } else if (state == 0) {
-      state = 1;
+    } else if (currentState == 0) {
+      currentState = 1;
       lastBounceMillis = now;
     }
   }
 }
 
-bool printEvents(void) {
-  struct event_t e;
+bool debugEvents(void) {
   bool had_output = false;
-  while (pop_event(&e)) {
-    printf("[%u,%d]", e.millis, e.level);
-    had_output = true;
+
+  if (FLAG_debug) {
+    struct event_t e;
+    while (pop_event(&e)) {
+      printf("[%u,%d]", e.millis, e.level);
+      had_output = true;
+    }
   }
+
   return had_output;
 }
 
@@ -82,7 +93,7 @@ void printState(void) {
   static int last_count = -1;
   bool add_eoln = false;
 
-  add_eoln = printEvents();
+  add_eoln = debugEvents();
 
   if (last_count != totalGallons) {
     last_count = totalGallons;
@@ -112,7 +123,14 @@ void printState(void) {
 }
 
 int main(int argc, char *argv[]) {
-  // optionally set total
+  // optional --debug
+  if (argc > 1) {
+    if (!strcmp(argv[argc - 1], "--debug")) {
+      FLAG_debug = true;
+      --argc;
+    }
+  }
+  // optionally set start total
   if (argc > 1) {
     totalGallons = atoi(argv[1]);
   }
@@ -122,9 +140,12 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // configure PIN
+  // configure pin
   pinMode(PULSE_PIN, INPUT);
   pullUpDnControl(PULSE_PIN, PUD_UP);
+
+  // sample pin
+  currentState = digitalRead(PULSE_PIN);
 
   // setup notification
   if (wiringPiISR(PULSE_PIN, INT_EDGE_BOTH, &EdgeInterrupt) < 0) {
