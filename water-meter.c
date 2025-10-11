@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,7 @@
 #include <wiringPi.h>
 
 #define PULSE_PIN 4 // Using GPIO Pin 23, which is Pin 4 for wiringPi library
-#define DEBOUNCE_MILLIS 50
+#define SAMPLE_RATE 1000 // micros
 
 #define WWW_FILE "/var/www/html/well.json"
 
@@ -17,9 +18,9 @@ bool FLAG_debug; // --debug
 
 volatile int totalGallons = 0;
 volatile unsigned int lastUpdateMillis = 0;
-volatile unsigned int lastBounceMillis = 0;
 volatile float gallonsPerMinute = 0;
-volatile int currentState = 1;
+volatile int currentState = 0;
+volatile unsigned int currentSamples = 0;
 
 struct event_t {
   int millis;
@@ -50,28 +51,28 @@ bool pop_event(struct event_t *d) {
   return true;
 }
 
-void EdgeInterrupt(void) {
-  unsigned int now = millis();
-  unsigned int delta_t = now - lastBounceMillis;
+void sigAlarm(int sig_num) {
   int currentLevel = digitalRead(PULSE_PIN);
 
-  if (FLAG_debug) {
-    push_event(now, currentLevel);
+  if (sig_num != SIGALRM)
+    return;
+
+  currentSamples = (currentSamples << 1) | currentLevel;
+
+  if (currentState == 0 && currentSamples == -1u) {
+    // 32 idle samples seen; we're idle again
+    currentState = 1;
   }
 
-  if (delta_t > DEBOUNCE_MILLIS) {
-    if (currentLevel == 0) {
-      if (currentState == 1) {
-        gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
-        lastUpdateMillis = now;
-        totalGallons++;
-        currentState = 0;
-        lastBounceMillis = now;
-      }
-    } else if (currentState == 0) {
-      currentState = 1;
-      lastBounceMillis = now;
-    }
+  if (currentState == 1 && (currentSamples & 7) == 0) {
+    // Some consequetive zeros seen; we're busy
+    unsigned int now = millis();
+
+    currentState = 0;
+
+    gallonsPerMinute = 60000.0f / (now - lastUpdateMillis);
+    lastUpdateMillis = now;
+    totalGallons++;
   }
 }
 
@@ -120,6 +121,7 @@ void printState(void) {
 
   if (add_eoln)
     printf("\n");
+  fflush(stdout);
 }
 
 int main(int argc, char *argv[]) {
@@ -141,17 +143,14 @@ int main(int argc, char *argv[]) {
   }
 
   // configure pin
-  pinMode(PULSE_PIN, INPUT);
   pullUpDnControl(PULSE_PIN, PUD_UP);
+  pinMode(PULSE_PIN, INPUT);
 
-  // sample pin
-  currentState = digitalRead(PULSE_PIN);
+  lastUpdateMillis = millis() - 1;
 
-  // setup notification
-  if (wiringPiISR(PULSE_PIN, INT_EDGE_BOTH, &EdgeInterrupt) < 0) {
-    fprintf(stderr, "Unable to setup ISR: %s\n", strerror(errno));
-    return 1;
-  }
+  // set up sampler
+  signal(SIGALRM, sigAlarm);
+  ualarm(SAMPLE_RATE, SAMPLE_RATE);
 
   // loop forever, mostly sleeping
   while (1) {
