@@ -53,6 +53,27 @@ $ = function() {
                 wellEndTotal = g;
             }
         }
+     
+        // UI gets sluggish with too much data..
+        // trim wellData per url parameter: ?d (default), ?w, ?m, ?y
+        let period = document.location.search.at(-1);
+        let horizon = 24 * 60 * 60;
+        switch (period) {
+                case 'y': horizon *= 365; break;
+                case 'm': horizon *= 31; break;
+                case 'w': horizon *= 8; break;
+        }
+        let newStartTime = wellEndTime - horizon;
+        for (let i = wellData.length - 1; i >= 0; i--) {
+                let e = wellData[i];
+                if (e.x < newStartTime * 1000) {
+                        // Pick new start
+                        wellStartTime = Math.round(e.x / 1000);
+                        wellStartTotal = e.y;
+                        wellData = wellData.slice(i - wellData.length);
+                        break;
+                }
+        }
 
         // Compute Gallons per minute, approximately.
         let prev_x = 0;
